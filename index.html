@@ -764,7 +764,7 @@ function furniture(kind, pal, rng){
     box(hw*.86, h*.72, 2,  hw*.44, h*.52, hh, pal.light);
     box(3, 3, 3, -2, h*.52, hh+2, pal.metal);               // ручки
     box(3, 3, 3,  2, h*.52, hh+2, pal.metal);
-    box(hw*2, 5, hh*2, 0, 2.5, 0, pal.dark);                // цоколь
+    box(hw*2+3, 5, hh*2+3, 0, 2.5, 0, pal.dark);            // цоколь чуть шире корпуса
   } else if (kind === 'shelf'){                  // стеллаж: длинный и высокий
     hw = 52; hh = 12; h = 66;
     box(hw*2, h, hh*2, 0, h/2, 0, pal.wood);
@@ -788,7 +788,7 @@ function furniture(kind, pal, rng){
   } else if (kind === 'pillar'){                 // колонна: высокая
     hw = 20; hh = 20; h = 96;
     box(30, 10, 30, 0, 5, 0, pal.dark);
-    cyl(16, h-20, 10, 0, h/2, 0, pal.stone);
+    cyl(16, h-14, 10, 0, h/2, 0, pal.stone);
     box(34, 12, 34, 0, h-6, 0, pal.dark);
   } else if (kind === 'machine'){                // станок: высокий
     hw = 34; hh = 26; h = 62;
@@ -833,9 +833,12 @@ function buildLayout(wave){
   };
   // кусок стены: просто большой блок, из них лепится любая форма
   const slab = (x, y, hw, hh, h) => {
-    parts.push({ g:xf(nonIdx(new THREE.BoxGeometry(hw*2, h, hh*2)), null, [x, h/2, y]), c:pal.wall });
-    parts.push({ g:xf(nonIdx(new THREE.BoxGeometry(hw*2+4, 6, hh*2+4)), null, [x, h-3, y]), c:pal.dark });
-    obstacles.push({ x, y, hw, hh, h, tall:true });
+    // плиты перекрываются, и при одинаковой высоте их верхние грани совпадают —
+    // отсюда мерцание. Развожу высоты и поднимаю карниз выше верха плиты.
+    const hv = h + rng()*9;
+    parts.push({ g:xf(nonIdx(new THREE.BoxGeometry(hw*2, hv, hh*2)), null, [x, hv/2, y]), c:pal.wall });
+    parts.push({ g:xf(nonIdx(new THREE.BoxGeometry(hw*2+5, 7, hh*2+5)), null, [x, hv+1.5, y]), c:pal.dark });
+    obstacles.push({ x, y, hw, hh, h:hv, tall:true });
   };
 
   // 1. периметр
