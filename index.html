@@ -464,7 +464,7 @@ const flat = g => { const n = g.toNonIndexed(); n.computeVertexNormals(); return
 
 /* --- пол, стены, окружение --- */
 const floorMat = new THREE.MeshLambertMaterial({ color:0x241A42 });
-const gridMat  = new THREE.MeshBasicMaterial({ color:0x3A2A5E, transparent:true, opacity:.5 });
+const gridMat  = new THREE.MeshBasicMaterial({ color:0x3A2A5E });
 const propMat  = new THREE.MeshLambertMaterial({ color:0x2C2050 });
 
 const floorMesh = new THREE.Mesh(new THREE.PlaneGeometry(CFG.world.w, CFG.world.h), floorMat);
@@ -478,11 +478,11 @@ const gridGroup = new THREE.Group(); scene.add(gridGroup);
   const step = 125, thin = 2.5;
   for (let x = step; x < CFG.world.w; x += step){
     const m = new THREE.Mesh(new THREE.PlaneGeometry(thin, CFG.world.h), gridMat);
-    m.rotation.x = -Math.PI/2; m.position.set(x, .6, CFG.world.h/2); gridGroup.add(m);
+    m.rotation.x = -Math.PI/2; m.position.set(x, 1.2, CFG.world.h/2); gridGroup.add(m);
   }
   for (let z = step; z < CFG.world.h; z += step){
     const m = new THREE.Mesh(new THREE.PlaneGeometry(CFG.world.w, thin), gridMat);
-    m.rotation.x = -Math.PI/2; m.position.set(CFG.world.w/2, .6, z); gridGroup.add(m);
+    m.rotation.x = -Math.PI/2; m.position.set(CFG.world.w/2, 1.2, z); gridGroup.add(m);
   }
 })();
 
@@ -513,6 +513,7 @@ function applyPlace(w){
   buildLayout(w);
   floorMat.color.setHex(p.floor);
   gridMat.color.setHex(p.grid);
+  gridMat.color.lerp(new THREE.Color(p.floor), .45);   // прежняя полупрозрачность, но краской
   propMat.color.setHex(p.prop);
   renderer.setClearColor(p.sky, 1);
   scene.fog = new THREE.Fog(p.fog, 700, 2100);
@@ -836,38 +837,50 @@ function buildLayout(wave){
     // плиты перекрываются, и при одинаковой высоте их верхние грани совпадают —
     // отсюда мерцание. Развожу высоты и поднимаю карниз выше верха плиты.
     const hv = h + rng()*9;
+    hw += rng()*.8; hh += rng()*.8;   // сбиваю точное совпадение боковых граней
     parts.push({ g:xf(nonIdx(new THREE.BoxGeometry(hw*2, hv, hh*2)), null, [x, hv/2, y]), c:pal.wall });
     parts.push({ g:xf(nonIdx(new THREE.BoxGeometry(hw*2+5, 7, hh*2+5)), null, [x, hv+1.5, y]), c:pal.dark });
     obstacles.push({ x, y, hw, hh, h:hv, tall:true });
   };
 
-  // 1. периметр
+  // 1. глухая коробка снаружи — граница мира, её не видно за контуром
   slab(W/2, -T, W/2+T, T, 70);
   slab(W/2, D+T, W/2+T, T, 70);
   slab(-T, D/2, T, D/2, 70);
   slab(W+T, D/2, T, D/2, 70);
 
-  // 2. срезанные углы — комната перестаёт быть коробкой
-  const cut = 110 + rng()*90;
-  [[0,0],[W,0],[0,D],[W,D]].forEach(([cx,cy]) => {
-    for (let i = 0; i < 3; i++){
-      const s = cut*(3-i)/3.4, t = cut*i/3.2;
-      slab(cx + (cx ? -s/2 - t : s/2 + t), cy + (cy ? -s/2 : s/2), s/2, s/2, 70);
+  /* 2. рваный контур: иду по периметру и на каждом шаге отступаю внутрь
+     на случайную глубину, заполняя промежуток плитами. Получается ломаная
+     стена с карманами и мысами вместо ровной линии. */
+  const STEP = 150;
+  const carve = (side) => {
+    const along = side < 2 ? W : D;
+    const n = Math.max(3, Math.round(along / STEP));
+    let prev = 40 + rng()*90;
+    for (let i = 0; i < n; i++){
+      // глубина меняется плавно, но иногда прыгает — отсюда мысы и карманы
+      const jump = rng() < .3;
+      let deep = jump ? 40 + rng()*260 : prev + (rng()-.5)*120;
+      deep = Math.max(30, Math.min(300, deep));
+      prev = deep;
+      const a0 = i*along/n, a1 = (i+1)*along/n;
+      const mid = (a0+a1)/2, half = (a1-a0)/2 + 6;
+      if (side === 0) slab(mid, deep/2, half, deep/2, 70);
+      else if (side === 1) slab(mid, D - deep/2, half, deep/2, 70);
+      else if (side === 2) slab(deep/2, mid, deep/2, half, 70);
+      else slab(W - deep/2, mid, deep/2, half, 70);
     }
-  });
+  };
+  for (let s4 = 0; s4 < 4; s4++) carve(s4);
 
-  // 3. выступы и ниши по стенам
-  const bays = 5 + Math.floor(rng()*4);
-  for (let i = 0; i < bays; i++){
-    const side = Math.floor(rng()*4);
-    const len = 70 + rng()*150, deep = 60 + rng()*120;
-    if (side < 2){
-      const x = 200 + rng()*(W-400), y = side ? D : 0;
-      slab(x, y + (side ? -deep/2 : deep/2), len/2, deep/2, 70);
-    } else {
-      const y = 250 + rng()*(D-500), x = side === 2 ? 0 : W;
-      slab(x + (side === 3 ? -deep/2 : deep/2), y, deep/2, len/2, 70);
-    }
+  // 3. отдельно стоящие обломки стен посреди зала — рубят прямые простреливаемые линии
+  const chunks = 3 + Math.floor(rng()*4);
+  for (let i = 0; i < chunks; i++){
+    const horiz = rng() < .5;
+    const len = 130 + rng()*260, thick = 34 + rng()*28;
+    const x = 320 + rng()*(W-640), y = 340 + rng()*(D-680);
+    if (Math.hypot(x - W/2, y - D/2) < 300) continue;   // не загораживать старт
+    slab(x, y, horiz ? len/2 : thick/2, horiz ? thick/2 : len/2, 62 + rng()*16);
   }
 
   // 4. мебель внутри, с зазорами для прохода
@@ -941,7 +954,7 @@ const shadowMat = new THREE.MeshBasicMaterial({ color:0x000000, transparent:true
                                                 opacity:.26, depthWrite:false });
 function makeShadow(r){
   const m = new THREE.Mesh(shadowGeo, shadowMat);
-  m.rotation.x = -Math.PI/2; m.scale.set(r, r, r); m.position.y = 1.2;
+  m.rotation.x = -Math.PI/2; m.scale.set(r, r, r); m.position.y = 2.2;
   return m;
 }
 
