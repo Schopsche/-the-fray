@@ -331,11 +331,17 @@ const CFG = {
    Меняются каждые три волны. Цвета уходят в материалы сцены и в туман. */
 const PLACES = [
   { nm:{ru:'КРИПТА', en:'CRYPT'},   floor:0x241A42, grid:0x3A2A5E, wall:0x3A2A5E,
-    sky:0x1B1430, prop:0x2C2050, fog:0x1B1430 },
+    sky:0x1B1430, prop:0x2C2050, fog:0x1B1430,
+    pal:{ wall:0x40305F, wood:0x5A3C4A, light:0x8A6A78, metal:0x6E6480,
+          dark:0x1E1630, stone:0x6A5C86, accent:0xB24DDB } },
   { nm:{ru:'ЛИТЕЙНЫЙ', en:'FOUNDRY'}, floor:0x3A2018, grid:0x6B3520, wall:0x6B3520,
-    sky:0x24120C, prop:0x4A2618, fog:0x24120C },
+    sky:0x24120C, prop:0x4A2618, fog:0x24120C,
+    pal:{ wall:0x6E3A22, wood:0x6A4426, light:0xA8703C, metal:0x7A6154,
+          dark:0x2A160E, stone:0x8A6244, accent:0xFFA23A } },
   { nm:{ru:'ЛЕДНИК', en:'GLACIER'}, floor:0x16303A, grid:0x2A5A66, wall:0x2A5A66,
-    sky:0x0E1E26, prop:0x1C3E4A, fog:0x0E1E26 }
+    sky:0x0E1E26, prop:0x1C3E4A, fog:0x0E1E26,
+    pal:{ wall:0x2E6270, wood:0x3A6A72, light:0x7FC3CE, metal:0x5E8A94,
+          dark:0x102630, stone:0x87BFCB, accent:0x46E5C0 } }
 ];
 const placeOf = w => PLACES[Math.floor((w-1)/3) % PLACES.length];
 
@@ -459,7 +465,6 @@ const flat = g => { const n = g.toNonIndexed(); n.computeVertexNormals(); return
 /* --- пол, стены, окружение --- */
 const floorMat = new THREE.MeshLambertMaterial({ color:0x241A42 });
 const gridMat  = new THREE.MeshBasicMaterial({ color:0x3A2A5E, transparent:true, opacity:.5 });
-const wallMat  = new THREE.MeshLambertMaterial({ color:0x3A2A5E });
 const propMat  = new THREE.MeshLambertMaterial({ color:0x2C2050 });
 
 const floorMesh = new THREE.Mesh(new THREE.PlaneGeometry(CFG.world.w, CFG.world.h), floorMat);
@@ -479,19 +484,6 @@ const gridGroup = new THREE.Group(); scene.add(gridGroup);
     const m = new THREE.Mesh(new THREE.PlaneGeometry(CFG.world.w, thin), gridMat);
     m.rotation.x = -Math.PI/2; m.position.set(CFG.world.w/2, .6, z); gridGroup.add(m);
   }
-})();
-
-const wallGroup = new THREE.Group(); scene.add(wallGroup);
-(function buildWalls(){
-  const H = 62, T = 26, W = CFG.world.w, D = CFG.world.h;
-  const mk = (w,h,d,x,y,z) => {
-    const m = new THREE.Mesh(new THREE.BoxGeometry(w,h,d), wallMat);
-    m.position.set(x,y,z); wallGroup.add(m);
-  };
-  mk(W+T*2, H, T, W/2, H/2, -T/2);
-  mk(W+T*2, H, T, W/2, H/2, D+T/2);
-  mk(T, H, D, -T/2, H/2, D/2);
-  mk(T, H, D, W+T/2, H/2, D/2);
 })();
 
 // декорации за стенами: силуэты, в игру не вмешиваются
@@ -518,9 +510,9 @@ function buildProps(seed){
 
 function applyPlace(w){
   const p = placeOf(w);
+  buildLayout(w);
   floorMat.color.setHex(p.floor);
   gridMat.color.setHex(p.grid);
-  wallMat.color.setHex(p.wall);
   propMat.color.setHex(p.prop);
   renderer.setClearColor(p.sky, 1);
   scene.fog = new THREE.Fog(p.fog, 700, 2100);
@@ -740,6 +732,207 @@ function foeModel(type){
   return m;
 }
 
+
+/* ---------- ПЛАНИРОВКА ПОМЕЩЕНИЙ ----------
+   Каждая волна получает свою комнату: неровные стены с нишами и выступами
+   плюс мебель. Всё, что стоит на полу, — прямоугольник со столкновениями.
+   Высокое (шкафы, колонны, стены) ловит пули, низкое (ящики, столы) — нет,
+   поэтому за шкаф можно спрятаться, а через стол просто нельзя пробежать. */
+
+let obstacles = [];                 // {x, y, hw, hh, h, tall}
+const layoutGroup = new THREE.Group();
+scene.add(layoutGroup);
+
+// свой генератор случайных чисел: одна и та же волна даёт одну и ту же комнату
+function seeded(seed){
+  let s = seed >>> 0 || 1;
+  return () => { s ^= s << 13; s >>>= 0; s ^= s >> 17; s ^= s << 5; s >>>= 0; return s / 4294967296; };
+}
+
+/* --- набор мебели: каждая вещь собирается из кусочков с разными цветами --- */
+function furniture(kind, pal, rng){
+  const P = [];
+  const add = (g, c) => P.push({ g:nonIdx(g), c });
+  const box = (w,h,d,x,y,z,c) => add(xf(new THREE.BoxGeometry(w,h,d), null, [x,y,z]), c);
+  const cyl = (r,h,n,x,y,z,c) => add(xf(new THREE.CylinderGeometry(r,r,h,n), null, [x,y,z]), c);
+  let hw, hh, h;
+
+  if (kind === 'cabinet'){                       // шкаф: высокий, ловит пули
+    hw = 26; hh = 15; h = 74;
+    box(hw*2, h, hh*2, 0, h/2, 0, pal.wood);
+    box(hw*.86, h*.72, 2, -hw*.44, h*.52, hh, pal.light);   // дверцы
+    box(hw*.86, h*.72, 2,  hw*.44, h*.52, hh, pal.light);
+    box(3, 3, 3, -2, h*.52, hh+2, pal.metal);               // ручки
+    box(3, 3, 3,  2, h*.52, hh+2, pal.metal);
+    box(hw*2, 5, hh*2, 0, 2.5, 0, pal.dark);                // цоколь
+  } else if (kind === 'shelf'){                  // стеллаж: длинный и высокий
+    hw = 52; hh = 12; h = 66;
+    box(hw*2, h, hh*2, 0, h/2, 0, pal.wood);
+    for (let i = 1; i <= 3; i++)
+      box(hw*1.9, 3, hh*2.2, 0, h*i/4, 0, pal.light);
+  } else if (kind === 'crate'){                  // ящик: низкий, пули летят над ним
+    hw = 22; hh = 22; h = 30;
+    box(hw*2, h, hh*2, 0, h/2, 0, pal.wood);
+    box(hw*2.1, 4, 6, 0, h*.62, 0, pal.light);              // обвязка
+    box(6, 4, hh*2.1, 0, h*.62, 0, pal.light);
+  } else if (kind === 'table'){                  // стол: низкий
+    hw = 38; hh = 24; h = 26;
+    box(hw*2, 6, hh*2, 0, h-3, 0, pal.wood);
+    const leg = (sx,sz) => box(6, h-6, 6, sx*(hw-6), (h-6)/2, sz*(hh-6), pal.dark);
+    leg(-1,-1); leg(1,-1); leg(-1,1); leg(1,1);
+  } else if (kind === 'barrel'){                 // бочка: низкая
+    hw = 19; hh = 19; h = 36;
+    cyl(19, h, 12, 0, h/2, 0, pal.metal);
+    cyl(20, 4, 12, 0, h*.28, 0, pal.dark);
+    cyl(20, 4, 12, 0, h*.72, 0, pal.dark);
+  } else if (kind === 'pillar'){                 // колонна: высокая
+    hw = 20; hh = 20; h = 96;
+    box(30, 10, 30, 0, 5, 0, pal.dark);
+    cyl(16, h-20, 10, 0, h/2, 0, pal.stone);
+    box(34, 12, 34, 0, h-6, 0, pal.dark);
+  } else if (kind === 'machine'){                // станок: высокий
+    hw = 34; hh = 26; h = 62;
+    box(hw*2, h*.8, hh*2, 0, h*.4, 0, pal.metal);
+    box(hw*1.4, h*.3, hh*1.4, 0, h*.88, 0, pal.dark);
+    box(8, h*.5, 8, hw*.6, h*1.1, 0, pal.accent);           // труба
+  } else if (kind === 'spire'){                  // ледяной шип: высокий
+    hw = 22; hh = 22; h = 88;
+    add(xf(new THREE.ConeGeometry(30, h, 6), null, [0, h/2, 0]), pal.stone);
+    add(xf(new THREE.ConeGeometry(16, h*.5, 6), null, [16, h*.25, 12]), pal.light);
+  } else {                                       // глыба: низкая
+    hw = 30; hh = 26; h = 34;
+    add(xf(new THREE.OctahedronGeometry(34), [1,.5,.85], [0, h*.4, 0]), pal.stone);
+  }
+  return { pieces:P, hw, hh, h, tall:h >= 55 };
+}
+
+const KITS = [
+  ['pillar','cabinet','shelf','crate','table','barrel'],   // крипта
+  ['machine','crate','barrel','shelf','cabinet','table'],  // литейный
+  ['spire','rock','crate','pillar','barrel','table']       // ледник
+];
+
+/* --- сама генерация комнаты --- */
+function buildLayout(wave){
+  const W = CFG.world.w, D = CFG.world.h;
+  const place = placeOf(wave);
+  const styleIdx = Math.floor((wave-1)/3) % 3;
+  const kit = KITS[styleIdx];
+  const rng = seeded(wave * 7919 + 13);
+  const pal = place.pal;
+
+  obstacles = [];
+  const parts = [];
+  const T = 26;                       // толщина стен
+
+  const put = (kind, x, y) => {
+    const f = furniture(kind, pal, rng);
+    for (const p of f.pieces)
+      parts.push({ g:xf(p.g, null, [x, 0, y]), c:p.c });
+    obstacles.push({ x, y, hw:f.hw, hh:f.hh, h:f.h, tall:f.tall });
+  };
+  // кусок стены: просто большой блок, из них лепится любая форма
+  const slab = (x, y, hw, hh, h) => {
+    parts.push({ g:xf(nonIdx(new THREE.BoxGeometry(hw*2, h, hh*2)), null, [x, h/2, y]), c:pal.wall });
+    parts.push({ g:xf(nonIdx(new THREE.BoxGeometry(hw*2+4, 6, hh*2+4)), null, [x, h-3, y]), c:pal.dark });
+    obstacles.push({ x, y, hw, hh, h, tall:true });
+  };
+
+  // 1. периметр
+  slab(W/2, -T, W/2+T, T, 70);
+  slab(W/2, D+T, W/2+T, T, 70);
+  slab(-T, D/2, T, D/2, 70);
+  slab(W+T, D/2, T, D/2, 70);
+
+  // 2. срезанные углы — комната перестаёт быть коробкой
+  const cut = 110 + rng()*90;
+  [[0,0],[W,0],[0,D],[W,D]].forEach(([cx,cy]) => {
+    for (let i = 0; i < 3; i++){
+      const s = cut*(3-i)/3.4, t = cut*i/3.2;
+      slab(cx + (cx ? -s/2 - t : s/2 + t), cy + (cy ? -s/2 : s/2), s/2, s/2, 70);
+    }
+  });
+
+  // 3. выступы и ниши по стенам
+  const bays = 5 + Math.floor(rng()*4);
+  for (let i = 0; i < bays; i++){
+    const side = Math.floor(rng()*4);
+    const len = 70 + rng()*150, deep = 60 + rng()*120;
+    if (side < 2){
+      const x = 200 + rng()*(W-400), y = side ? D : 0;
+      slab(x, y + (side ? -deep/2 : deep/2), len/2, deep/2, 70);
+    } else {
+      const y = 250 + rng()*(D-500), x = side === 2 ? 0 : W;
+      slab(x + (side === 3 ? -deep/2 : deep/2), y, deep/2, len/2, 70);
+    }
+  }
+
+  // 4. мебель внутри, с зазорами для прохода
+  const MINGAP = 118;                      // самый крупный враг — босс радиусом 44
+  const free = (x, y, hw, hh) => {
+    if (Math.hypot(x - W/2, y - D/2) < 230) return false;     // площадка старта
+    for (const o of obstacles){
+      if (Math.abs(x - o.x) < o.hw + hw + MINGAP &&
+          Math.abs(y - o.y) < o.hh + hh + MINGAP) return false;
+    }
+    return x > 150 && x < W-150 && y > 150 && y < D-150;
+  };
+
+  const want = 22 + Math.floor(rng()*10);
+  let tries = 0;
+  while (obstacles.length < want + 12 && tries++ < 900){
+    const kind = kit[Math.floor(rng()*kit.length)];
+    const probe = furniture(kind, pal, rng);
+    const x = 150 + rng()*(W-300), y = 150 + rng()*(D-300);
+    if (!free(x, y, probe.hw, probe.hh)) continue;
+    put(kind, x, y);
+  }
+
+  // 5. вся комната — один меш: рисуется за один вызов
+  while (layoutGroup.children.length) layoutGroup.remove(layoutGroup.children[0]);
+  layoutGroup.add(new THREE.Mesh(weld(parts),
+    new THREE.MeshLambertMaterial({ vertexColors:true })));
+}
+
+/* --- столкновения --- */
+// выталкивает круг из прямоугольников по кратчайшей оси: получается скольжение
+function unstick(e, r){
+  for (const o of obstacles){
+    const dx = e.x - o.x, dy = e.y - o.y;
+    const px = o.hw + r - Math.abs(dx);
+    if (px <= 0) continue;
+    const py = o.hh + r - Math.abs(dy);
+    if (py <= 0) continue;
+    if (px < py) e.x = o.x + (dx < 0 ? -1 : 1) * (o.hw + r);
+    else         e.y = o.y + (dy < 0 ? -1 : 1) * (o.hh + r);
+  }
+}
+function blocked(x, y, r){
+  for (const o of obstacles)
+    if (Math.abs(x - o.x) < o.hw + r && Math.abs(y - o.y) < o.hh + r) return true;
+  return false;
+}
+// пулю останавливает только то, что выше пояса
+function shotStopped(x, y){
+  for (const o of obstacles)
+    if (o.tall && Math.abs(x - o.x) < o.hw && Math.abs(y - o.y) < o.hh) return true;
+  return false;
+}
+// грубая проверка видимости: шагаем вдоль луча
+function sightBlocked(x1, y1, x2, y2){
+  const d = Math.hypot(x2-x1, y2-y1), n = Math.ceil(d/26);
+  for (let i = 1; i < n; i++){
+    const t = i/n;
+    if (shotStopped(x1 + (x2-x1)*t, y1 + (y2-y1)*t)) return true;
+  }
+  return false;
+}
+// сдвигает точку наружу, если она оказалась внутри мебели
+function nudgeOut(p, r){
+  for (let i = 0; i < 6 && blocked(p.x, p.y, r); i++) unstick(p, r);
+  return p;
+}
+
 const shadowGeo = new THREE.CircleGeometry(1, 16);
 const shadowMat = new THREE.MeshBasicMaterial({ color:0x000000, transparent:true,
                                                 opacity:.26, depthWrite:false });
@@ -818,10 +1011,17 @@ function startWave(){
 const clamp = (v,a,b) => v < a ? a : v > b ? b : v;
 const rnd = (a,b) => a + Math.random()*(b-a);
 
-function edgePoint(){
-  const a = Math.random() * 6.2832, d = rnd(360, 620);
-  return { x: clamp(P.x + Math.cos(a)*d, 30, CFG.world.w-30),
-           y: clamp(P.y + Math.sin(a)*d, 30, CFG.world.h-30) };
+function edgePoint(r){
+  const rad = r || 20;
+  for (let i = 0; i < 24; i++){
+    const a = Math.random()*6.2832, d = rnd(360, 620);
+    const x = clamp(P.x + Math.cos(a)*d, 40, CFG.world.w-40);
+    const y = clamp(P.y + Math.sin(a)*d, 40, CFG.world.h-40);
+    if (!blocked(x, y, rad + 6)) return { x, y };
+  }
+  // не нашлось за 24 попытки — берём любую точку и выталкиваем наружу
+  return nudgeOut({ x:clamp(P.x + rnd(-500,500), 60, CFG.world.w-60),
+                    y:clamp(P.y + rnd(-500,500), 60, CFG.world.h-60) }, rad + 6);
 }
 function spawnFoe(){
   const poolT = ENEMIES.filter(e => e.from <= wave);
@@ -829,20 +1029,20 @@ function spawnFoe(){
                 * Math.min(1, .35 + (wave - e.from)*.32);
   let total = poolT.reduce((a,e) => a + wt(e), 0), r = Math.random()*total, type = poolT[0];
   for (const e of poolT){ r -= wt(e); if (r <= 0){ type = e; break; } }
-  const p = edgePoint();
+  const p = edgePoint(type.r);
   const hp = Math.round(type.hp * CFG.wave.hpScale(wave));
   foes.push(Object.assign({}, type, { x:p.x, y:p.y, hp, maxHp:hp,
     speed:type.speed*CFG.wave.spdScale(wave), dmg:type.dmg*CFG.wave.dmgScale(wave),
     flash:0, kb:0, kbx:0, kby:0, gunT:Math.random()*2, st:'walk', stT:0,
-    walk:Math.random()*6, face:0 }));
+    walk:Math.random()*6, face:0, detour:0, turn:0 }));
 }
 function spawnBoss(){
-  const p = edgePoint();
+  const p = edgePoint(BOSS.r);
   const hp = Math.round(BOSS.hp * CFG.wave.hpScale(wave));
   foes.push(Object.assign({}, BOSS, { x:p.x, y:p.y, hp, maxHp:hp,
     speed:BOSS.speed*CFG.wave.spdScale(wave), dmg:BOSS.dmg*CFG.wave.dmgScale(wave),
     flash:0, kb:0, kbx:0, kby:0, gunT:0, st:'walk', stT:0,
-    walk:0, face:0, addT:3 }));
+    walk:0, face:0, detour:0, turn:0, addT:3 }));
 }
 
 /* ---------- 11. БОНУСЫ ---------- */
@@ -853,9 +1053,15 @@ function spawnBuff(){
   let total = UPGRADES.reduce((a,u) => a + buffWeight(u), 0);
   let r = Math.random()*total, u = UPGRADES[0];
   for (const x of UPGRADES){ r -= buffWeight(x); if (r <= 0){ u = x; break; } }
-  const a = Math.random()*6.2832, d = rnd(230, 520);
-  buffs.push({ u, x:clamp(P.x + Math.cos(a)*d, 40, CFG.world.w-40),
-                  y:clamp(P.y + Math.sin(a)*d, 40, CFG.world.h-40), t:0 });
+  let x, y;
+  for (let i = 0; i < 24; i++){
+    const a = Math.random()*6.2832, d = rnd(230, 520);
+    x = clamp(P.x + Math.cos(a)*d, 50, CFG.world.w-50);
+    y = clamp(P.y + Math.sin(a)*d, 50, CFG.world.h-50);
+    if (!blocked(x, y, 26)) break;
+  }
+  const spot = nudgeOut({ x, y }, 26);
+  buffs.push({ u, x:spot.x, y:spot.y, t:0 });
 }
 function takeBuff(b){
   b.u.go(P, BUFF_MULT * heroK(b.u.id));
@@ -896,6 +1102,7 @@ function step(dt){
   if (moving) P.walk += dt*11;
   P.x = clamp(P.x, 24, CFG.world.w-24);
   P.y = clamp(P.y, 24, CFG.world.h-24);
+  unstick(P, P.r);                       // выталкивание даёт скольжение вдоль стен
   if (P.dashCdT > 0) P.dashCdT -= dt;
   if (P.inv > 0) P.inv -= dt;
   P.moving = moving;
@@ -933,27 +1140,49 @@ function step(dt){
     } else if (f.charge){
       if (f.st === 'walk'){
         f.x += dx/d*f.speed*dt; f.y += dy/d*f.speed*dt;
-        if (d < f.charge.range){ f.st = 'wind'; f.stT = f.charge.wind; }
+        unstick(f, f.r);
+        if (d < f.charge.range && !sightBlocked(f.x, f.y, P.x, P.y)){
+          f.st = 'wind'; f.stT = f.charge.wind;
+        }
       } else if (f.st === 'wind'){
         f.stT -= dt;
         if (f.stT <= 0){ f.st = 'dash'; f.stT = f.charge.time; f.cdx = dx/d; f.cdy = dy/d; }
       } else {
         f.stT -= dt;
+        const bx = f.x, by = f.y;
         f.x += f.cdx*f.charge.speed*dt; f.y += f.cdy*f.charge.speed*dt;
+        unstick(f, f.r);
+        // врезался в стену на разгоне — бросок окончен
+        if (Math.hypot(f.x-bx, f.y-by) < f.charge.speed*dt*.5) f.stT = 0;
         if (f.stT <= 0) f.st = 'walk';
       }
     } else if (f.gun){
       const dir = d > f.gun.range*.6 ? 1 : -1;
       f.x += dx/d*f.speed*dt*dir; f.y += dy/d*f.speed*dt*dir;
+      unstick(f, f.r);
       f.gunT -= dt;
-      if (f.gunT <= 0 && d < f.gun.range){
+      // сквозь шкаф не плюются
+      if (f.gunT <= 0 && d < f.gun.range && !sightBlocked(f.x, f.y, P.x, P.y)){
         f.gunT = f.gun.cd;
         const a = Math.atan2(dy, dx);
         ebullets.push({ x:f.x, y:f.y, vx:Math.cos(a)*f.gun.speed, vy:Math.sin(a)*f.gun.speed,
                         r:7, dmg:f.gun.dmg*CFG.wave.dmgScale(wave), life:3 });
       }
     } else {
-      f.x += dx/d*f.speed*dt; f.y += dy/d*f.speed*dt;
+      // если упёрся — на пару секунд забирает вбок, иначе топтался бы в шкаф
+      let ax = dx/d, ay = dy/d;
+      if (f.detour > 0){
+        f.detour -= dt;
+        const c = Math.cos(f.turn), sn = Math.sin(f.turn);
+        const nx = ax*c - ay*sn; ay = ax*sn + ay*c; ax = nx;
+      }
+      const px = f.x, py = f.y;
+      f.x += ax*f.speed*dt; f.y += ay*f.speed*dt;
+      unstick(f, f.r);
+      if (f.detour <= 0 && Math.hypot(f.x-px, f.y-py) < f.speed*dt*.45){
+        f.detour = 1.1;
+        f.turn = (Math.random() < .5 ? 1 : -1) * 1.15;
+      }
     }
     if (f.boss){
       f.addT -= dt;
@@ -976,6 +1205,7 @@ function step(dt){
 
   for (const b of bullets){
     b.x += b.vx*dt; b.y += b.vy*dt; b.life -= dt;
+    if (shotStopped(b.x, b.y)){ b.life = 0; ripple(b.x, b.y, 26, 0xFFD166); continue; }
     for (const f of foes){
       if (b.hits <= 0) break;
       if (Math.hypot(f.x-b.x, f.y-b.y) < f.r + b.r){
@@ -989,6 +1219,7 @@ function step(dt){
 
   for (const b of ebullets){
     b.x += b.vx*dt; b.y += b.vy*dt; b.life -= dt;
+    if (shotStopped(b.x, b.y)){ b.life = 0; continue; }
     if (P.inv <= 0 && Math.hypot(P.x-b.x, P.y-b.y) < P.r + b.r){ hurt(b.dmg); b.life = 0; }
   }
   ebullets = ebullets.filter(b => b.life > 0);
@@ -1062,7 +1293,7 @@ function damage(f, dmg, vx, vy, src){
   if (f.hp <= 0){
     foes = foes.filter(o => o !== f);
     ripple(f.x, f.y, f.r*3.4, f.color);
-    gems.push({ x:f.x, y:f.y, v:f.xp, r:6 });
+    gems.push(nudgeOut({ x:f.x, y:f.y, v:f.xp, r:6 }, 10));
     if (Math.random() < (f.boss ? 1 : .45))
       for (let i = 0; i < (f.boss ? 8 : 1); i++)
         coins.push({ x:f.x+rnd(-14,14), y:f.y+rnd(-14,14),
@@ -1123,7 +1354,7 @@ function startClear(){
 }
 function vaporize(f){
   ripple(f.x, f.y, f.r*3.4, f.color);
-  gems.push({ x:f.x, y:f.y, v:f.xp, r:6 });
+  gems.push(nudgeOut({ x:f.x, y:f.y, v:f.xp, r:6 }, 10));
   if (Math.random() < .5)
     coins.push({ x:f.x+rnd(-12,12), y:f.y+rnd(-12,12), v:Math.max(1,f.gold), r:7 });
   if (Math.random() < CFG.medChance)
