@@ -1,6 +1,9 @@
 # THE FRAY
 
-Экшен-рогалик для Telegram. Один HTML-файл, три.js с CDN, никакой сборки.
+Экшен-рогалик для Telegram. Один HTML-файл, three.js с CDN, никакой сборки.
+
+**Играть:** https://t.me/the_fray_game_bot
+**Сайт:** https://schopsche.github.io/-the-fray/
 
 ---
 
@@ -13,7 +16,7 @@ GitHub Pages подходит идеально: бесплатно, отдаёт
 2. Положи в корень `index.html` (это и есть игра).
 3. **Settings → Pages → Source: Deploy from a branch → Branch: `main`, папка `/ (root)` → Save.**
 4. Через минуту-две адрес будет такой:
-   `https://ТВОЙ-НИК.github.io/the-fray/`
+   `https://schopsche.github.io/-the-fray/`
 
 Открой его в обычном браузере и убедись, что игра запускается. Вне Telegram
 всё работает, кроме сохранения рекорда — оно живёт в Telegram CloudStorage.
@@ -70,7 +73,7 @@ https://t.me/твой_бот/имя_приложения
 
 ```bash
 BOT_TOKEN=1234567890:AAH... \
-APP_URL=https://ТВОЙ-НИК.github.io/the-fray/ \
+APP_URL=https://schopsche.github.io/-the-fray/ \
 python3 bot.py
 ```
 
@@ -93,7 +96,7 @@ Railway или Fly.io. Прямая ссылка и кнопка меню при
 У меня между сессиями не сохраняются ни файлы, ни память, поэтому рабочий цикл такой:
 
 1. Кидаешь мне ссылку на репозиторий или на сырой файл
-   (`https://raw.githubusercontent.com/ник/the-fray/main/index.html`).
+   (`https://raw.githubusercontent.com/Schopsche/-the-fray/main/index.html`).
 2. Я скачиваю текущую версию, вношу правки, отдаю готовый файл.
 3. Ты коммитишь.
 
