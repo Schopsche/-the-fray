@@ -349,7 +349,7 @@ const placeOf = w => PLACES[Math.floor((w-1)/3) % PLACES.length];
 const ENEMIES = [
   { id:'runner', shape:'tri',  r:12, hp:22, speed:128, dmg:9,  gold:1, xp:1,
     color:0xFF3E7F, from:1, weight:10, fade:.055 },
-  { id:'blob',   shape:'circ', r:20, hp:74, speed:66,  dmg:15, gold:2, xp:2,
+  { id:'blob',   shape:'circ', r:20, hp:50, speed:66,  dmg:15, gold:2, xp:2,
     color:0xB24DDB, from:1, weight:6,  fade:.03 },
   { id:'charger',shape:'sq',   r:16, hp:48, speed:215, dmg:19, gold:3, xp:3,
     color:0xFFA23A, from:4, weight:5, weave:true },
@@ -871,8 +871,9 @@ function buildLayout(wave){
     // boundary — глухая коробка снаружи, её босс не сносит: иначе можно выйти из мира
     obstacles.push({ x, y, hw, hh, h:hv, tall:true, boundary, parts:[gp1, gp2] });
   };
-  // отдельно стоящий обломок стены — по сути книжный шкаф: корпус, полки и ряды книг
-  const bookshelf = (x, y, hw, hh, h) => {
+  // отдельно стоящий обломок стены — по сути книжный шкаф: корпус, полки и ряды книг.
+  // alongX — стена вытянута по X (hw большая сторона, hh — толщина); иначе наоборот
+  const bookshelf = (x, y, hw, hh, h, alongX) => {
     const bp = [];
     const addAt = (w, hgt, d, ox, oy, oz, c) => {
       const gp = { g:xf(nonIdx(new THREE.BoxGeometry(w, hgt, d)), null, [x+ox, oy, y+oz]), c };
@@ -880,21 +881,32 @@ function buildLayout(wave){
     };
     addAt(hw*2, h, hh*2, 0, h/2, 0, pal.wood);                       // корпус
     const shelves = 3;
-    for (let i = 1; i <= shelves; i++)
-      addAt(hw*1.9, 3, hh*2.25, 0, h*i/(shelves+1), 0, pal.dark);    // полки чуть выступают вперёд
-    // книги: цветные корешки вдоль передней грани каждой полки
+    for (let i = 1; i <= shelves; i++){
+      // полки чуть выступают вперёд — за пределы толщины корпуса
+      if (alongX) addAt(hw*1.9, 3, hh*2.25, 0, h*i/(shelves+1), 0, pal.dark);
+      else        addAt(hw*2.25, 3, hh*1.9, 0, h*i/(shelves+1), 0, pal.dark);
+    }
+    // книги: цветные корешки вдоль передней грани каждой полки (вдоль длинной стороны)
     const BOOK_COLS = [pal.accent, pal.light, pal.metal, pal.stone];
+    const along = alongX ? hw : hh;
+    const thick = alongX ? hh : hw;
     for (let i = 1; i <= shelves; i++){
       const shelfY = h*i/(shelves+1) + 6;
       const n = 3 + Math.floor(rng()*3);
       for (let k = 0; k < n; k++){
         const bw = 3 + rng()*2.5, bh = 10 + rng()*7;
-        const bx = -hw*.8 + (k+.5)*(hw*1.6/n) + (rng()-.5)*2;
+        const pos = -along*.8 + (k+.5)*(along*1.6/n) + (rng()-.5)*2;
         const col = BOOK_COLS[Math.floor(rng()*BOOK_COLS.length)];
-        addAt(bw, bh, 3, bx, shelfY + bh/2 - 6, hh + 1, col);
+        if (alongX) addAt(bw, bh, 3, pos, shelfY + bh/2 - 6, thick + 1, col);
+        else        addAt(3, bh, bw, thick + 1, shelfY + bh/2 - 6, pos, col);
       }
     }
-    obstacles.push({ x, y, hw, hh, h, tall:true, shelf:true, parts:bp });
+    // полки и книги торчат за пределы толщины корпуса (см. addAt выше) — коллайдер
+    // по толщине шире голого корпуса, иначе пуля визуально сносит книгу, а по факту
+    // пролетает мимо хитбокса; длинную сторону не трогаем
+    const depthPad = thick*1.15 + 3;
+    obstacles.push({ x, y, hw: alongX ? hw : depthPad, hh: alongX ? depthPad : hh,
+                     h, tall:true, shelf:true, parts:bp });
   };
 
   // 1. глухая коробка снаружи — граница мира, её не видно за контуром
@@ -934,7 +946,7 @@ function buildLayout(wave){
     const len = 130 + rng()*260, thick = 34 + rng()*28;
     const x = 320 + rng()*(W-640), y = 340 + rng()*(D-680);
     if (Math.hypot(x - W/2, y - D/2) < 300) continue;   // не загораживать старт
-    bookshelf(x, y, horiz ? len/2 : thick/2, horiz ? thick/2 : len/2, 62 + rng()*16);
+    bookshelf(x, y, horiz ? len/2 : thick/2, horiz ? thick/2 : len/2, 62 + rng()*16, horiz);
   }
 
   // 4. мебель внутри, с зазорами для прохода
@@ -1364,9 +1376,16 @@ function step(dt){
   for (const b of bullets){
     b.x += b.vx*dt; b.y += b.vy*dt; b.life -= dt;
     if (shotStopped(b.x, b.y)){
-      b.life = 0; ripple(b.x, b.y, 26, 0xFFD166);
       const shelf = shelfHitAt(b.x, b.y);
-      if (shelf && Math.random() < .1) dropBook(shelf, b.x, b.y);
+      if (shelf){
+        // решение «пробило/не пробило» фиксируем один раз на пулю+шкаф —
+        // иначе за несколько кадров внутри толщины шкафа шанс переигрывается
+        if (!b.shelfRoll) b.shelfRoll = new Map();
+        if (!b.shelfRoll.has(shelf)) b.shelfRoll.set(shelf, Math.random() < .3);
+        if (b.shelfRoll.get(shelf)) continue;   // пробила навылет, летит дальше как ни в чём не бывало
+      }
+      b.life = 0; ripple(b.x, b.y, 26, 0xFFD166);
+      if (shelf && Math.random() < .12) dropBook(shelf, b.x, b.y);
       continue;
     }
     for (const f of foes){
